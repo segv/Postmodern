@@ -192,31 +192,29 @@ needed by the code interpreting the query results."
       (unwind-protect (progn ,@body)
         (setf (connection-available ,connection-name) t)))))
 
+(defun call-with-reconnect-restart (connection thunk)
+  (ensure-connection connection)
+  (restart-case
+      (handler-bind ((stream-error
+                       (lambda (e)
+                         (when (eq (connection-socket connection) (stream-error-stream e))
+                           (ensure-socket-is-closed (connection-socket connection) :abort t))))
+                     (cl-postgres-error:server-shutdown
+                       (lambda (e)
+                         (declare (ignore e))
+                         (ensure-socket-is-closed (connection-socket connection) :abort t))))
+        (funcall thunk))
+    (:reconnect () :report "Try to reconnect"
+      (reopen-database connection)
+      ;; try doing it, whatever thunk does, again by just calling this
+      ;; same function again (functional iteration).
+      (call-with-reconnect-restart connection thunk))))
+
 (defmacro with-reconnect-restart (connection &body body)
   "When, inside the body, an error occurs that breaks the connection
 socket, a condition of type database-connection-error is raised,
 offering a :reconnect restart."
-  (let ((connection-name (gensym))
-        (body-name (gensym))
-        (retry-name (gensym)))
-  `(let ((,connection-name ,connection))
-    (ensure-connection ,connection-name)
-    (labels ((,body-name ()
-               (handler-case (progn ,@body)
-                 (stream-error (e)
-                   (cond ((eq (connection-socket ,connection-name) (stream-error-stream e))
-                          (ensure-socket-is-closed (connection-socket ,connection-name) :abort t)
-                          (,retry-name (wrap-socket-error e)))
-                         (t (error e))))
-                 (cl-postgres-error:server-shutdown (e)
-                   (ensure-socket-is-closed (connection-socket ,connection-name) :abort t)
-                   (,retry-name e))))
-             (,retry-name (err)
-               (restart-case (error err)
-                 (:reconnect () :report "Try to reconnect"
-                             (reopen-database ,connection-name)
-                             (,body-name)))))
-      (,body-name)))))
+  `(call-with-reconnect-restart ,connection (lambda () ,@body)))
 
 (defun wait-for-notification (connection)
   "Perform a blocking wait for asynchronous notification. Return the
