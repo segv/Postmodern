@@ -335,16 +335,15 @@ connection if something in the block raises a condition. Not hygienic
 at all, only used right below here."
   `(let ((sync-sent nil)
          (ok nil))
-    (handler-case
-      (unwind-protect
-           (multiple-value-prog1
-               (progn ,@body)
-             (setf ok t))
-        (unless ok
-          (try-to-sync socket sync-sent)))
-      (end-of-file (c)
-        (ensure-socket-is-closed socket :abort t)
-        (error c)))))
+     (handler-bind ((end-of-file (lambda (condition)
+                                   (when (eq socket (stream-error-stream condition))
+                                     (ensure-socket-is-closed socket :abort t)))))
+         (unwind-protect
+              (multiple-value-prog1
+                  (progn ,@body)
+                (setf ok t))
+           (unless ok
+             (try-to-sync socket sync-sent))))))
 
 (defmacro returning-effected-rows (value &body body)
   "Computes a value, then runs a body, then returns, as multiple
